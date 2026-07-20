@@ -1,0 +1,5 @@
+device = "cpu"
+max_hours = 8.0
+seed = 1799
+batch_size = 32
+mixed_precision = false
