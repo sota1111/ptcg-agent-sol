@@ -34,6 +34,30 @@ printf '%s\n' '{"request_id":"demo-1","observation":{},"legal_actions":["pass"]}
 
 This repository deliberately keeps the adapter narrow: update the input adapter only after confirming the current competition's official runtime and schema.
 
+The adapter also accepts the common masked form, with equal-length `actions` and `action_mask` arrays
+either at the request root or inside `observation`. It rejects empty masks and never asks a policy to
+choose outside the normalized legal set.
+
+## Reproducible policy training
+
+The built-in tabular learner provides a dependency-free, deterministic baseline for validating the
+complete train/checkpoint/evaluate lifecycle before wiring in competition data. It self-plays a small
+turn-based battle proxy, saves versioned checkpoints atomically, and evaluates against the first-legal
+action baseline.
+
+```bash
+ptcg-agent train --config configs/cpu.toml --episodes 10000 --checkpoint artifacts/policy.json
+ptcg-agent train --config configs/cpu.toml --episodes 20000 --checkpoint artifacts/policy.json --resume
+ptcg-agent evaluate --config configs/cpu.toml --checkpoint artifacts/policy.json --episodes 1000
+printf '%s\n' '{"observation":{"remaining":3,"player":1},"legal_actions":[1,2,3]}' \
+  | ptcg-agent run --config configs/cpu.toml --checkpoint artifacts/policy.json
+```
+
+Training uses the configured seed and honours the same maximum eight-hour budget as inference. On a
+budget stop it writes a final checkpoint and exits 124; rerun with `--resume`. CPU and CUDA presets use
+the same deterministic policy/checkpoint format. A CUDA preset verifies accelerator availability up
+front, making device configuration failures explicit rather than silently falling back to CPU.
+
 ## CPU, GPU, and compute budget
 
 Presets live in `configs/`. Override any preset safely with CLI flags:
