@@ -13,3 +13,5 @@ data/*
 !data/.gitkeep
 artifacts/*
 !artifacts/.gitkeep
+cg/
+submission.tar.gz

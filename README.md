@@ -34,6 +34,13 @@ printf '%s\n' '{"request_id":"demo-1","observation":{},"legal_actions":["pass"]}
 
 This repository deliberately keeps the adapter narrow: update the input adapter only after confirming the current competition's official runtime and schema.
 
+## Kaggle submission entry point
+
+The repository also exposes the official `main.agent(obs_dict) -> list[int]` contract and a
+measured-baseline 60-card `deck.csv`. The competition boundary is intentionally separate from the
+JSONL development protocol above. Runtime setup, archive creation, and the reproducible real-engine
+match command are documented in [docs/kaggle-submission.md](docs/kaggle-submission.md).
+
 The adapter also accepts the common masked form, with equal-length `actions` and `action_mask` arrays
 either at the request root or inside `observation`. It rejects empty masks and never asks a policy to
 choose outside the normalized legal set.
