@@ -4,10 +4,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any
 
-_ROOT = Path(__file__).resolve().parent
+_KAGGLE_AGENT_DIR = Path("/kaggle_simulations/agent")
+_ROOT = (
+    _KAGGLE_AGENT_DIR
+    if _KAGGLE_AGENT_DIR.is_dir()
+    else Path(globals().get("__file__", os.getcwd())).resolve().parent
+    if "__file__" in globals()
+    else Path.cwd()
+)
 
 
 def read_deck_csv() -> list[int]:
