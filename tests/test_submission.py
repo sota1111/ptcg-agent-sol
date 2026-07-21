@@ -24,6 +24,15 @@ def test_initial_call_returns_exactly_60_cards() -> None:
     assert len(submission.read_deck_csv()) == 60
 
 
+def test_kaggle_exec_without_file_loads_deck(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(REPO)
+    namespace: dict[str, object] = {}
+    exec(compile((REPO / "main.py").read_text(), "main.py", "exec"), namespace)
+    agent = namespace["agent"]
+    assert callable(agent)
+    assert len(agent({"select": None})) == 60
+
+
 @pytest.mark.parametrize("minimum,maximum", [(0, 0), (1, 1), (2, 3)])
 def test_decision_satisfies_selection_contract(minimum: int, maximum: int) -> None:
     action = load_submission().agent(
