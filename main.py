@@ -1,57 +1,238 @@
-"""Kaggle PTCG submission entry point for Sol."""
+"""Sol submission entry point (SOT-1838).
 
-from __future__ import annotations
+Champion determinized MCTS (matsu SOT-1672/1693 lineage) with the SOT-1838
+integrations baked in from v1:
 
-import hashlib
-import json
+- self-deck-out steer: the evaluator's deck-preservation gradient is ON
+  (`eval_weights` below; SOT-1697 loss analysis — deck-out dominated matsu's
+  losses) and the 竹式 rule table flips draw prompts to "min" at a thin deck;
+- 竹式 rule policy drives rollout/in-tree selection counts (SOT-1682/1694);
+- time governor + layered fallbacks: MCTS -> Greedy -> Rule -> random-legal.
+"""
+
 import os
-from pathlib import Path
-from typing import Any
+import sys
+import time
 
-_KAGGLE_AGENT_DIR = Path("/kaggle_simulations/agent")
-_ROOT = (
-    _KAGGLE_AGENT_DIR
-    if _KAGGLE_AGENT_DIR.is_dir()
-    else Path(globals().get("__file__", os.getcwd())).resolve().parent
-    if "__file__" in globals()
-    else Path.cwd()
+# Kaggle executes this file with exec(), so the submission directory is not
+# necessarily first on sys.path. Prefer the bundled agents/ package over an
+# unrelated kaggle_environments module with the same top-level name.
+_KAGGLE_AGENT_DIR = "/kaggle_simulations/agent"
+_SUBMISSION_DIR = (
+    _KAGGLE_AGENT_DIR if os.path.isdir(_KAGGLE_AGENT_DIR) else os.path.abspath(os.getcwd())
 )
+if sys.path[0] != _SUBMISSION_DIR:
+    sys.path.insert(0, _SUBMISSION_DIR)
+
+from agents import GreedyAgent, MctsAgent, RuleAgent, actions  # noqa: E402
+from agents.observation import adapt  # noqa: E402
+from agents.rng import Rng  # noqa: E402
+
+# Agent seed: externally injectable (SOT-1671 RNG discipline); the default
+# only fixes the tie-break/fallback stream, the engine shuffles independently.
+_DEFAULT_SEED = 20260720
+
+# Sol semantic champion configuration. Search parameters are the matsu champion settings
+# (SOT-1672 deviate_margin=0.1 was the decisive parameter, confirmed by the
+# SOT-1673 ablation; unspecified fields keep PlannerConfig defaults: uct_c=1.4,
+# rollout="greedy"). eval_weights adds the deck-preservation gradient from v1
+# — matsu shipped these values deck-conditionally (SOT-1704/1729); fable's
+# 松-lineage deck is exactly the profile they protect.
+SOL_CONFIG = {
+    "max_root_actions": 6,
+    "max_tree_depth": 1,
+    "rollout_turns": 100,
+    "rollout_depth": 200,
+    "n_worlds": 4,
+    "time_budget_s": 0.8,
+    "deviate_margin": 0.1,
+    "eval_weights": {
+        "deck_low": -0.2,
+        "deck_low_at": 14,
+        "deck_low_prize_gate": 3,
+    },
+}
+
+# Remaining-time-aware budget control (~10 min total clock per player per
+# match; no per-move limit). Thresholds are on THIS agent's cumulative act()
+# wall-clock; crossing one shrinks the per-decision search budget, and past
+# the last one the agent stops searching and hands off to Greedy. A healthy
+# match spends ~10s of search total, so the schedule only bounds tail risk
+# (pathological matches / slow submission hardware) far away from the 600s
+# loss-on-timeout line.
+MATCH_TIME_ALLOWANCE_S = 600.0
+BUDGET_SCHEDULE = (
+    (300.0, 0.8),  # < 300s spent: champion budget
+    (420.0, 0.4),  # 300-420s: half budget
+    (510.0, 0.2),  # 420-510s: quarter budget
+)  # >= 510s: Greedy handoff (no search)
 
 
-def read_deck_csv() -> list[int]:
-    deck = [int(line) for line in (_ROOT / "deck.csv").read_text().splitlines() if line]
-    if len(deck) != 60:
-        raise ValueError(f"deck.csv must contain exactly 60 cards (found {len(deck)})")
-    return deck
+class SubmissionAgent:
+    """Submission wrapper: Sol MCTS + time governor + layered fallbacks.
+
+    Failure containment (Validation Episode Error prevention), innermost
+    first: MctsAgent already degrades on its own (planner exception -> greedy
+    prior -> random-legal in BaseAgent.act); if its act() nevertheless
+    raises, this wrapper falls back to a GreedyAgent, if THAT raises, to the
+    竹式 RuleAgent, and if all three fail, to a legal action built straight
+    from the raw observation (SOT-1838 chain: MCTS -> Greedy -> Rule ->
+    random-legal). The initial deck call (select is None) always returns the
+    60-card deck.
+    """
+
+    def __init__(self, seed, deck, clock=time.perf_counter, card_index=None):
+        self.seed = int(seed)
+        self._deck = list(deck)
+        self._clock = clock
+        self._mcts = MctsAgent(
+            self.seed, deck=self._deck, card_index=card_index, **dict(SOL_CONFIG)
+        )
+        self._greedy = GreedyAgent(seed=self.seed, deck=self._deck, card_index=card_index)
+        self._rule = RuleAgent(seed=self.seed, deck=self._deck, card_index=card_index)
+        self._rng = Rng(self.seed).child("submission-last-resort")
+        self.think_time_s = 0.0  # cumulative act() wall-clock (time governor)
+        self.move_times = []  # per-decision wall-clock (bench reporting)
+        self.greedy_handoffs = 0  # decisions made by Greedy after exhaustion
+        self.emergency_fallbacks = 0  # act()-level exceptions caught here
+
+    # Counters proxied from the inner agents so benches see one namespace.
+    @property
+    def fallback_count(self):
+        return self._mcts.fallback_count + self._greedy.fallback_count + self._rule.fallback_count
+
+    @property
+    def decision_count(self):
+        return self._mcts.decision_count + self._greedy.decision_count + self._rule.decision_count
+
+    @property
+    def budget_violations(self):
+        return self._mcts.budget_violations
+
+    @property
+    def planner_fallbacks(self):
+        return self._mcts.planner_fallbacks
+
+    @property
+    def degraded_count(self):
+        return self._mcts.degraded_count
+
+    def current_budget(self):
+        """Per-decision search budget for the current cumulative clock.
+
+        None means the search allowance is exhausted: hand off to Greedy.
+        """
+        for spent_limit, budget in BUDGET_SCHEDULE:
+            if self.think_time_s < spent_limit:
+                return budget
+        return None
+
+    def act(self, obs_dict):
+        self._validate_selection(obs_dict)
+        t0 = self._clock()
+        try:
+            return self._act_inner(obs_dict)
+        finally:
+            elapsed = self._clock() - t0
+            self.think_time_s += elapsed
+            if self._is_decision(obs_dict):
+                self.move_times.append(elapsed)
+
+    @staticmethod
+    def _validate_selection(obs_dict):
+        """Reject malformed prompts before any fallback can mask the error."""
+        select = (obs_dict or {}).get("select")
+        if select is None:
+            return
+        if not isinstance(select, dict):
+            raise ValueError("select must be an object or null")
+        options = select.get("option") or []
+        if not isinstance(options, list):
+            raise ValueError("select.option must be a list")
+        minimum = int(select.get("minCount") or 0)
+        maximum_raw = select.get("maxCount")
+        maximum = minimum if maximum_raw is None else int(str(maximum_raw))
+        if minimum < 0 or maximum < minimum or maximum > len(options):
+            raise ValueError("invalid selection bounds")
+
+    @staticmethod
+    def _is_decision(obs_dict):
+        try:
+            return (obs_dict or {}).get("select") is not None
+        except Exception:
+            return False
+
+    def _act_inner(self, obs_dict):
+        budget = self.current_budget()
+        if budget is None:
+            if self._is_decision(obs_dict):
+                self.greedy_handoffs += 1
+            return self._greedy_act(obs_dict)
+        self._mcts.config.time_budget_s = budget
+        try:
+            return self._mcts.act(obs_dict)
+        except Exception:
+            self.emergency_fallbacks += 1
+            return self._greedy_act(obs_dict)
+
+    def _greedy_act(self, obs_dict):
+        try:
+            return self._greedy.act(obs_dict)
+        except Exception:
+            self.emergency_fallbacks += 1
+            return self._rule_act(obs_dict)
+
+    def _rule_act(self, obs_dict):
+        try:
+            return self._rule.act(obs_dict)
+        except Exception:
+            self.emergency_fallbacks += 1
+            return self._last_resort(obs_dict)
+
+    def _last_resort(self, obs_dict):
+        """Legal action from the raw dict alone (no agent code in the path)."""
+        sel = (obs_dict or {}).get("select")
+        if sel is None:
+            return list(self._deck)
+        try:
+            return actions.random_action(adapt(obs_dict).select, self._rng)
+        except Exception:
+            options = sel.get("option") or []
+            lo = max(int(sel.get("minCount") or 0), 1)
+            lo = min(lo, len(options))
+            return list(range(lo))
 
 
-def _stable_option_score(observation: dict[str, Any], index: int, option: Any) -> bytes:
-    payload = {"observation": observation, "index": index, "option": option}
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
-    return hashlib.sha256(encoded.encode()).digest()
+_agent: SubmissionAgent | None = None
 
 
-def agent(obs_dict: dict[str, Any]) -> list[int]:
-    """Return the initial 60-card deck or legal indices for a selection prompt."""
-    select = (obs_dict or {}).get("select")
-    if select is None:
-        return read_deck_csv()
-    if not isinstance(select, dict):
-        raise ValueError("select must be an object or null")
-    options = select.get("option") or []
-    if not isinstance(options, list):
-        raise ValueError("select.option must be a list")
-    minimum = int(select.get("minCount") or 0)
-    maximum_raw = select.get("maxCount")
-    maximum = minimum if maximum_raw is None else int(str(maximum_raw))
-    if minimum < 0 or maximum < minimum or maximum > len(options):
-        raise ValueError("invalid selection bounds")
-    ranked = sorted(
-        range(len(options)),
-        key=lambda index: _stable_option_score(obs_dict, index, options[index]),
-        reverse=True,
-    )
-    return sorted(ranked[:minimum])
+def read_deck_csv() -> list:
+    """Read deck.csv (repo root locally, /kaggle_simulations/agent/ on Kaggle).
+
+    Returns:
+        list[int]: A list of 60 card IDs in the deck.
+    """
+    file_path = "deck.csv"
+    if not os.path.exists(file_path):
+        file_path = "/kaggle_simulations/agent/" + file_path
+    with open(file_path) as file:
+        csv = file.read().split("\n")
+    return [int(csv[i]) for i in range(60)]
 
 
-__all__ = ["agent", "read_deck_csv"]
+def agent(obs_dict: dict) -> list:
+    """Pokémon Trading Card Game Agent (Sol determinized MCTS, SOT-1838).
+
+    Each element in the returned list must be >= 0 and < len(obs.select.option).
+    The list length must be between obs.select.minCount and obs.select.maxCount
+    (inclusive), with no duplicate elements. On the initial call obs.select is
+    None and the 60-card deck is returned.
+
+    Returns:
+        list[int]: A list of option index.
+    """
+    global _agent
+    if _agent is None:
+        seed = int(os.environ.get("AGENT_SEED", _DEFAULT_SEED))
+        _agent = SubmissionAgent(seed=seed, deck=read_deck_csv())
+    return _agent.act(obs_dict)
