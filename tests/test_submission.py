@@ -64,5 +64,6 @@ def test_submission_archive_layout_when_engine_is_installed() -> None:
         names = bundle.getnames()
     assert "main.py" in names
     assert "deck.csv" in names
+    assert "agents/planner.py" in names
     assert "cg/libcg.so" in names
     assert not any(name.startswith(("tests/", "eval/", ".git/")) for name in names)

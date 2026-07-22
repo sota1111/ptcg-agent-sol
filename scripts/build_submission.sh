@@ -2,10 +2,10 @@
 set -euo pipefail
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 archive="$repo/submission.tar.gz"
-for required in main.py deck.csv cg; do
+for required in main.py deck.csv agents cg; do
   [ -e "$repo/$required" ] || { echo "missing required submission path: $required" >&2; exit 1; }
 done
-tar -C "$repo" -czf "$archive" --exclude='__pycache__' --exclude='*.pyc' main.py deck.csv cg
+tar -C "$repo" -czf "$archive" --exclude='__pycache__' --exclude='*.pyc' main.py deck.csv agents cg
 gzip -t "$archive"
 listing="$(mktemp)"
 trap 'rm -f -- "$listing"' EXIT
