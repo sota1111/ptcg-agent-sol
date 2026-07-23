@@ -108,3 +108,20 @@ pytest
 ```
 
 No competition data, model weights, cards, credentials, or proprietary Pokémon assets are included. Source code is available under the [MIT License](LICENSE); that license does not grant rights to third-party data, trademarks, or game assets.
+
+## CPU-only deck preselection
+
+Generate a deterministic, legality-checked shortlist before a GPU optimization run:
+
+```bash
+ptcg-agent preselect-decks \
+  --replay artifacts/sol-vs-fable-sot-1792.jsonl \
+  --replay artifacts/sol-vs-fable-sot-1792-retry.jsonl \
+  --seed 20260723 --budget 10000 --top-k 16
+```
+
+The JSON manifest records the fixed regulation, baseline and candidate hashes, seed, search budget,
+hard-opponent scores, replay-derived metrics, and the diverse shortlist. The baseline `deck.csv` is
+always evaluated under the same scoring conditions. Progress is atomically checkpointed every 100
+candidates; rerun the identical command with `--resume` to continue. The shortlist `cards` arrays can
+be consumed directly by the subsequent Sol joint optimizer.
