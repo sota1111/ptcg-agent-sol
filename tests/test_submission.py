@@ -7,6 +7,11 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.skipif(
+    importlib.util.find_spec("cg") is None,
+    reason="competition engine assets are intentionally gitignored",
+)
+
 REPO = Path(__file__).resolve().parents[1]
 
 
