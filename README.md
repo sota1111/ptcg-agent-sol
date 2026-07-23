@@ -111,6 +111,9 @@ No competition data, model weights, cards, credentials, or proprietary Pokémon 
 
 ## CPU-only deck preselection
 
+The promoted shortlist feeds the reproducible joint GPU workflow described in
+[`docs/zero-sol-gpu-experiment.md`](docs/zero-sol-gpu-experiment.md).
+
 Generate a deterministic, legality-checked shortlist before a GPU optimization run:
 
 ```bash

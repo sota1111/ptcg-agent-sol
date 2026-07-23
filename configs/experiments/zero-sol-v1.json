@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "name": "zero-sol-joint-optimization-input",
+  "regulation": "standard-current",
+  "shortlist": "../../artifacts/sot-1890-deck-shortlist.json",
+  "searchBudget": 10000,
+  "seed": 20260723,
+  "wallClockBudgetHours": 8,
+  "consumer": "ptcg-agent-zero:configs/experiments/zero-sol-v1.json"
+}
