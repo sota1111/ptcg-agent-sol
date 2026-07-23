@@ -11,6 +11,7 @@ from pathlib import Path
 
 from ptcg_agent.agent import choose_action
 from ptcg_agent.config import RuntimeConfig, load_config
+from ptcg_agent.deck_preselection import preselect
 from ptcg_agent.training import evaluate, load_checkpoint, train
 
 
@@ -73,6 +74,18 @@ def parser() -> argparse.ArgumentParser:
     evaluation.add_argument("--max-hours", type=float)
     evaluation.add_argument("--episodes", type=int, default=1_000)
     evaluation.add_argument("--checkpoint", type=Path, default=Path("artifacts/policy.json"))
+    preselection = sub.add_parser("preselect-decks")
+    preselection.add_argument("--cards", type=Path, default=Path("data/EN_Card_Data.csv"))
+    preselection.add_argument("--baseline", type=Path, default=Path("deck.csv"))
+    preselection.add_argument("--replay", type=Path, action="append", default=[])
+    preselection.add_argument("--output", type=Path, default=Path("artifacts/deck-shortlist.json"))
+    preselection.add_argument(
+        "--checkpoint", type=Path, default=Path("artifacts/deck-preselection.checkpoint.json")
+    )
+    preselection.add_argument("--seed", type=int, default=20260723)
+    preselection.add_argument("--budget", type=int, default=10_000)
+    preselection.add_argument("--top-k", type=int, default=16)
+    preselection.add_argument("--resume", action="store_true")
     return root
 
 
@@ -122,6 +135,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             check_device(config)
             policy, _ = load_checkpoint(args.checkpoint, config.seed)
             print(json.dumps(evaluate(policy, config.seed, args.episodes), sort_keys=True))
+            return 0
+        if args.command == "preselect-decks":
+            result = preselect(
+                cards_path=args.cards,
+                baseline_path=args.baseline,
+                replay_paths=args.replay,
+                output_path=args.output,
+                checkpoint_path=args.checkpoint,
+                seed=args.seed,
+                budget=args.budget,
+                top_k=args.top_k,
+                resume=args.resume,
+            )
+            print(json.dumps(result, sort_keys=True))
             return 0
         if args.command == "data" and args.data_command == "download":
             args.output.mkdir(parents=True, exist_ok=True)
