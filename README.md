@@ -4,6 +4,10 @@ Reproducible, local-first workspace for the Kaggle Pokémon TCG AI Battle Challe
 
 > Before downloading or submitting anything, read and accept the competition rules on Kaggle. Competition data must remain in `data/`, which is ignored by Git.
 
+Normalized runtime datasets produced by `ptcg-agent-core` can be streamed on CPU with
+`ptcg_agent.runtime_dataset.load_runtime_dataset(path, split)`. The loader validates the versioned
+seven-feature public-observation contract and rejects actions outside the recorded legal set.
+
 ## Quick start
 
 Requirements: Python 3.11+ and Git. A CUDA-enabled PyTorch build is optional for the GPU preset.
